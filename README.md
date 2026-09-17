@@ -1,4 +1,4 @@
-# esp-lucas
+# Lucas-BLE-ESP32-Monitor
 
 A Bluetooth monitor for **Lucas LiFePO4 leisure batteries**. An ESP32-WROOM
 polls each pack in turn over BLE and serves a dashboard on your local network.
@@ -111,12 +111,9 @@ From the Firmware tab, or from a shell:
 curl -F firmware=@.pio/build/esp32dev/firmware.bin http://lucas.local/update
 ```
 
-`pio run -e ota -t upload` also works where the network allows it. It will not
-work from behind NAT — for example from WSL2 — because `espota` needs the board
-to open a connection *back* to the uploader. The `curl` form goes the other way
-and always works.
+`pio run -e ota -t upload` also works.
 
-**Changing `partitions.csv` requires a USB flash.** An OTA update rewrites only
+**Changing `partitions.csv` requires a USB flash** — an OTA update rewrites only
 the app image, never the partition table.
 
 ## Serial console

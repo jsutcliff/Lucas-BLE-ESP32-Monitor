@@ -1,4 +1,4 @@
-// esp-lucas - BLE battery monitor for LiFePO4 packs with a bolt-on BMS.
+// Lucas-BLE-ESP32-Monitor - a BLE monitor for Lucas LiFePO4 leisure batteries.
 //
 // Polls each configured pack over BLE in turn and serves a dashboard on the
 // local network. Everything is configured from the web UI; the serial console
@@ -118,7 +118,7 @@ void setup() {
     Serial.begin(115200);
     util::begin();
     delay(300);
-    Serial.println("\n  esp-lucas :: BLE battery monitor\n  type `help` for commands\n");
+    Serial.println("\n  Lucas-BLE-ESP32-Monitor\n  type `help` for commands\n");
 
     blelink::begin();
     poller::begin();
