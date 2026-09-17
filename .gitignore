@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+.idea/
+
+# Generated from web/dashboard.html by tools/gen_page.py on every build.
+include/dashboard_html.h

@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lucas Battery Monitor</title>
+<!--
+  Served gzipped straight off the ESP32. Completely self-contained: no CDN, no
+  external fetches. A battery monitor is often somewhere with no uplink, so the
+  page has to work on an isolated LAN.
+
+  The charts are hand-drawn SVG rather than a charting library, which keeps the
+  page a few KB and gives exact control over mark weight and grid contrast.
+  Series colours are slots 1-8 of a colourblind-validated categorical palette,
+  with separate steps chosen for the dark surface rather than an automatic
+  flip. Colour follows the pack, never its position in the list.
+-->
+<style>
+*{box-sizing:border-box}
+:root{
+  color-scheme:light;
+  --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --surface:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+}
+html,body{margin:0}
+body{background:var(--plane);color:var(--ink);font-size:14px;line-height:1.45;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+button,input{font:inherit;color:inherit}
+[hidden]{display:none!important}
+code{font-size:12px;background:var(--plane);border:1px solid var(--ring);
+  border-radius:4px;padding:1px 5px}
+.hdr{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);
+  border-bottom:1px solid var(--ring);display:flex;flex-wrap:wrap;gap:10px 14px;
+  align-items:center;padding:10px 16px}
+.hdr h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.tabs{display:flex;gap:2px;background:var(--plane);border:1px solid var(--ring);
+  border-radius:10px;padding:3px}
+.tab{background:none;border:0;border-radius:7px;padding:4px 12px;font-size:13px;
+  color:var(--ink2);cursor:pointer}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected="true"]{background:var(--surface);color:var(--ink);font-weight:600;
+  box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2);
+  background:var(--plane);border:1px solid var(--ring);border-radius:999px;padding:3px 10px;
+  white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+.btn{background:var(--surface);border:1px solid var(--ring);border-radius:8px;
+  padding:5px 12px;font-size:12px;cursor:pointer}
+.btn:hover{background:var(--plane)}
+.btn:disabled{opacity:.5;cursor:default}
+.spacer{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.wrap{max-width:1500px;margin:0 auto;padding:16px}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:14px;padding:16px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.charts{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.sub{font-size:12px;color:var(--ink2)}
+.val{font-variant-numeric:tabular-nums}
+.hero{font-size:2.7rem;line-height:1;font-weight:600;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+.hero small{font-size:1.05rem;font-weight:500}
+.stat{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums}
+.swatch{width:11px;height:11px;border-radius:3px;flex:none;display:inline-block}
+.meter{height:10px;background:var(--grid);border-radius:5px;overflow:hidden;margin:10px 0 16px}
+.meter>i{display:block;height:100%;border-radius:5px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 8px;margin-bottom:16px}
+.cellrow{display:grid;grid-template-columns:26px 1fr 78px;gap:8px;align-items:center;
+  margin-bottom:4px}
+.cellbar{height:14px;background:var(--grid);border-radius:4px;overflow:hidden}
+.cellbar>i{display:block;height:100%;border-radius:0 4px 4px 0}
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+  padding:2px 8px;border-radius:6px;border:1px solid var(--ring);white-space:nowrap}
+.packhd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.offline{opacity:.55}
+.chartbox{position:relative;height:200px;margin-top:8px}
+.chartbox svg{display:block;width:100%;height:100%}
+.tip{position:absolute;pointer-events:none;background:var(--surface);color:var(--ink);
+  border:1px solid var(--ring);border-radius:8px;padding:6px 9px;font-size:12px;
+  box-shadow:0 4px 14px rgba(0,0,0,.14);white-space:nowrap;z-index:5}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:11px;color:var(--ink2)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--ring)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.05em}
+.scroll{overflow-x:auto}
+input[type=number],input[type=text]{background:var(--surface);color:var(--ink);
+  border:1px solid var(--ring);border-radius:8px;padding:4px 8px;font-size:12px}
+input[type=number]{width:5.5rem}
+input[type=text]{width:100%;max-width:12rem}
+.rowbtns{display:flex;gap:6px;justify-content:flex-end}
+.pill{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--ring);
+  color:var(--ink2)}
+.bars{display:inline-flex;gap:2px;align-items:flex-end;height:11px;vertical-align:-1px}
+.bars i{width:3px;background:var(--muted);border-radius:1px}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--grid);
+  border-top-color:var(--ink2);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.cardhd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ranges{margin-left:auto;display:flex;gap:2px;background:var(--plane);
+  border:1px solid var(--ring);border-radius:8px;padding:2px}
+.rbtn{background:none;border:0;border-radius:6px;padding:2px 8px;font-size:11px;
+  color:var(--muted);cursor:pointer;font-variant-numeric:tabular-nums}
+.rbtn:hover{color:var(--ink)}
+.rbtn[aria-pressed="true"]{background:var(--surface);color:var(--ink);font-weight:600}
+@media (max-width:420px){.wrap{padding:12px}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>Lucas Battery Monitor</h1>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="dash" aria-selected="true">Dashboard</button>
+    <button class="tab" role="tab" data-tab="dev" aria-selected="false">Devices</button>
+    <button class="tab" role="tab" data-tab="fw" aria-selected="false">Firmware</button>
+  </nav>
+  <span class="spacer">
+    <span class="chip"><i id="wifiDot" class="dot"></i><span id="wifi">connecting</span></span>
+    <span class="chip">uptime <b id="uptime" class="val">-</b></span>
+    <span class="chip">poller <b id="fleetState">-</b></span>
+    <button id="fleetBtn" class="btn">Stop polling</button>
+    <button id="themeBtn" class="btn">Theme</button>
+  </span>
+</div>
+
+<div class="wrap">
+  <div id="errBar" class="card" hidden
+       style="margin-bottom:16px;border-color:var(--crit);color:var(--crit)"></div>
+
+  <section id="tab-dash">
+    <div class="charts">
+      <div class="card"><div class="cardhd"><span class="lbl">Pack voltage</span>
+        <span class="ranges" data-chart="V"></span></div>
+        <div class="chartbox" id="cV"></div><div class="legend" id="lV"></div></div>
+      <div class="card"><div class="cardhd"><span class="lbl">Current</span>
+        <span class="ranges" data-chart="I"></span></div>
+        <div class="chartbox" id="cI"></div><div class="legend" id="lI"></div></div>
+      <div class="card"><div class="cardhd"><span class="lbl">Power</span>
+        <span class="ranges" data-chart="P"></span></div>
+        <div class="chartbox" id="cP"></div><div class="legend" id="lP"></div></div>
+    </div>
+    <div id="packs" class="grid" style="margin-top:16px"></div>
+  </section>
+
+  <section id="tab-dev" hidden>
+    <div class="card">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">
+        <span class="lbl">Monitored devices</span>
+        <span class="sub" id="devCount"></span>
+        <span class="spacer">
+          <span class="sub">poll every</span>
+          <input id="pollInput" type="number" min="3" max="3600" step="1">
+          <span class="sub">s</span>
+          <button class="btn" id="pollSave">Save</button>
+          <button class="btn" id="scanBtn">Scan for devices</button>
+        </span>
+      </div>
+      <div class="scroll">
+        <table><thead><tr><th>Name</th><th>Address</th><th></th></tr></thead>
+        <tbody id="devBody"></tbody></table>
+      </div>
+      <div id="devMsg" class="sub" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card" id="scanWrap" style="margin-top:16px" hidden>
+      <div class="lbl" style="margin-bottom:8px">Nearby BLE devices
+        <span id="scanAge" class="sub"></span></div>
+      <div class="scroll">
+        <table><thead><tr><th>Name</th><th>Address</th><th>Signal</th><th></th></tr></thead>
+        <tbody id="scanBody"></tbody></table>
+      </div>
+      <div class="sub" style="margin-top:8px">Devices advertising a serial-over-BLE
+        service are listed first, since that is what a bolt-on BMS module looks like.
+        Anything here can be added &mdash; it simply has to speak the protocol to
+        return data.</div>
+    </div>
+  </section>
+
+  <section id="tab-fw" hidden>
+    <div class="card">
+      <div class="lbl" style="margin-bottom:12px">Firmware update</div>
+      <form id="otaForm" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+        <input type="file" id="otaFile" accept=".bin" required>
+        <button class="btn" type="submit">Upload &amp; reboot</button>
+        <span id="otaMsg" class="sub"></span>
+      </form>
+      <div class="sub" style="margin-top:12px">
+        Upload <code>.pio/build/esp32dev/firmware.bin</code>. The board writes it to
+        the spare app slot and only switches over once the whole image has arrived,
+        so a failed upload leaves the running firmware untouched.
+      </div>
+      <div class="sub" style="margin-top:8px">
+        From a shell: <code>curl -F firmware=@.pio/build/esp32dev/firmware.bin
+        http://lucas.local/update</code>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="lbl" style="margin-bottom:12px">Board</div>
+      <div class="scroll"><table><tbody id="sysBody"></tbody></table></div>
+      <div class="sub" style="margin-top:12px">
+        To move the board to a different WiFi network, run <code>wifi portal</code> on
+        the serial console &mdash; it raises the setup access point again.
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const SERIES=['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const packColor=i=>css(SERIES[i%SERIES.length]);
+const $=id=>document.getElementById(id);
+addEventListener('error',function(ev){
+  const b=$('errBar'); if(!b) return;
+  b.textContent='Dashboard script error: '+(ev.message||ev.error)+
+    ' \u2014 reload, and check the browser console.';
+  b.hidden=false;
+});
+let lastStatus=null;
+
+const RANGES=[[900,'15m'],[3600,'1h'],[21600,'6h'],[86400,'24h']];
+const CHARTS={
+  V:{box:'cV',leg:'lV',unit:' V',dig:2,zero:false,pick:(p,k)=>p.v[k]/1000},
+  I:{box:'cI',leg:'lI',unit:' A',dig:1,zero:true, pick:(p,k)=>p.i[k]/1000},
+  P:{box:'cP',leg:'lP',unit:' W',dig:0,zero:true, pick:(p,k)=>p.v[k]*p.i[k]/1e6}
+};
+let chartRange={V:900,I:900,P:900};
+try{const r=JSON.parse(localStorage.getItem('ranges')||'null'); if(r) Object.assign(chartRange,r)}
+catch(e){}
+const chartData={};      /* key -> {series, range} for redraws without refetching */
+const histCache={};      /* range -> {at, data}, so equal ranges share one fetch */
+
+
+/* tabs ----------------------------------------------------------------- */
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(function(b){
+    const on=b.dataset.tab===name;
+    b.setAttribute('aria-selected',on?'true':'false');
+    $('tab-'+b.dataset.tab).hidden=!on;
+  });
+  try{localStorage.setItem('tab',name)}catch(e){}
+  /* SVG needs a laid-out box to measure, so charts redraw once visible. */
+  if(name==='dash') redrawAll();
+  if(name==='dev') devApi();
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+
+/* theme ---------------------------------------------------------------- */
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  try{localStorage.setItem('theme',t)}catch(e){}
+  redrawAll();
+  if(lastStatus) renderPacks(lastStatus);
+}
+(function(){
+  let t=null; try{t=localStorage.getItem('theme')}catch(e){}
+  if(!t) t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+  applyTheme(t);
+})();
+$('themeBtn').onclick=()=>applyTheme(
+  document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark');
+
+/* helpers -------------------------------------------------------------- */
+const f=(n,d=2)=>Number(n).toFixed(d);
+const fmtDur=s=>{const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return d?d+'d '+h+'h':h?h+'h '+m+'m':m+'m'};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* Status never rides on colour alone - each carries a glyph and a word. */
+const ICON={good:'●',warn:'▲',crit:'■'};
+const tag=(st,txt)=>'<span class="tag" style="color:var(--'+st+')">'+ICON[st]+' '+txt+'</span>';
+const socState=v=>v>=50?['good','OK']:v>=20?['warn','Low']:['crit','Critical'];
+const spreadState=mv=>mv<30?['good','Balanced']:mv<60?['warn','Drifting']:['crit','Imbalanced'];
+const statCell=(l,v)=>'<div><div class="lbl">'+l+'</div><div class="stat">'+v+'</div></div>';
+
+/* pack cards ----------------------------------------------------------- */
+function renderPacks(s){
+  $('packs').innerHTML=s.packs.length?s.packs.map(function(p,i){
+    const col=packColor(i), on=p.online&&p.valid;
+    const amps=p.i/1000, watts=p.v*p.i/1e6;
+    const so=socState(p.soc), sp=spreadState(p.spread);
+    const cells=p.cells||[], mn=Math.min.apply(null,cells), mx=Math.max.apply(null,cells);
+    const bars=cells.map(function(mv,n){
+      const pct=Math.max(2,Math.min(100,(mv-2500)/(3650-2500)*100));
+      const note=cells.length>1?(mv===mn?' min':(mv===mx?' max':'')):'';
+      return '<div class="cellrow"><span class="lbl">C'+(n+1)+'</span>'+
+        '<span class="cellbar"><i style="width:'+pct+'%;background:'+col+'"></i></span>'+
+        '<span class="val" style="text-align:right;font-size:12px">'+f(mv/1000,3)+
+        '<span style="color:var(--muted)">'+note+'</span></span></div>'}).join('');
+    return '<div class="card '+(on?'':'offline')+'">'+
+      '<div class="packhd"><span class="swatch" style="background:'+col+'"></span>'+
+      '<b>'+esc(p.label)+'</b><span class="sub">'+esc(p.mac)+'</span>'+
+      '<span style="margin-left:auto">'+(on?tag('good','Online'):tag('crit','Offline'))+'</span></div>'+
+      '<div style="display:flex;align-items:flex-end;gap:12px">'+
+        '<div><div class="lbl">State of charge</div><div class="hero">'+
+          (on?p.soc:'--')+'<small>%</small></div></div>'+
+        '<div style="margin-left:auto;text-align:right">'+(on?tag(so[0],so[1]):'')+
+          '<div class="sub" style="margin-top:4px">'+
+          (on&&p.runtime?fmtDur(p.runtime*60)+' left':'&nbsp;')+'</div></div></div>'+
+      '<div class="meter"><i style="width:'+(on?p.soc:0)+'%;background:'+col+'"></i></div>'+
+      '<div class="stats">'+
+        statCell('Voltage',on?f(p.v/1000,3)+' V':'--')+
+        statCell('Current',on?(amps>0?'+':'')+f(amps,2)+' A':'--')+
+        statCell('Power',on?(watts>0?'+':'')+f(watts,1)+' W':'--')+
+        statCell('Temp',on&&p.temps.length?p.temps[0]+' °C':'--')+
+        statCell('Capacity',on?f(p.cap/10,0)+' Ah':'--')+
+        statCell('Cycles',on?p.cycles:'--')+
+      '</div>'+
+      '<div style="display:flex;align-items:center;margin-bottom:8px"><span class="lbl">Cells</span>'+
+        '<span style="margin-left:auto">'+
+        (on?tag(sp[0],sp[1]+' · '+p.spread+' mV'):'')+'</span></div>'+
+      (on?bars:'<div class="sub">no data yet</div>')+
+      '<div class="sub" style="margin-top:10px;font-size:11px">'+
+        (p.ageSec>=0?'updated '+p.ageSec+'s ago':'never seen')+' · '+
+        (p.polls-p.fails)+'/'+p.polls+' polls ok</div></div>'}).join('')
+    : '<div class="card sub">No devices monitored yet &mdash; add one on the '+
+      '<b>Devices</b> tab.</div>';
+}
+
+/* charts: plain SVG, one y-scale each, thin marks, recessive grid ------- */
+function niceTicks(lo,hi,want){
+  if(!isFinite(lo)||!isFinite(hi)) return [0];
+  if(hi-lo<1e-9){const p=Math.abs(hi)||1; lo-=p*.05; hi+=p*.05}
+  const raw=(hi-lo)/want, mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const norm=raw/mag, step=(norm<1.5?1:norm<3?2:norm<7?5:10)*mag;
+  const out=[]; for(let v=Math.ceil(lo/step)*step; v<=hi+step*1e-6; v+=step) out.push(v);
+  return out;
+}
+function drawChart(boxId,legendId,series,unit,digits,includeZero,range){
+  const box=$(boxId); box.innerHTML='';
+  $(legendId).innerHTML=series.map(s=>'<span><i class="swatch" style="background:'+
+    s.color+'"></i>'+esc(s.label)+'</span>').join('');
+
+  const W=box.clientWidth||600, H=box.clientHeight||200;
+  const m={t:8,r:10,b:22,l:46};
+  const pts=series.reduce((a,s)=>a.concat(s.data),[]);
+  if(!pts.length){
+    box.innerHTML='<div class="sub" style="padding-top:78px;text-align:center">'+
+      'collecting data…</div>'; return;
+  }
+  let xlo=Math.min.apply(null,pts.map(p=>p.x)), xhi=0;
+  let ylo=Math.min.apply(null,pts.map(p=>p.y)), yhi=Math.max.apply(null,pts.map(p=>p.y));
+  if(includeZero){ylo=Math.min(ylo,0);yhi=Math.max(yhi,0)}
+  const pad=(yhi-ylo)*.08||Math.abs(yhi||1)*.08; ylo-=pad; yhi+=pad;
+  if(xhi-xlo<1e-6) xlo=xhi-1;
+  const X=v=>m.l+(v-xlo)/(xhi-xlo)*(W-m.l-m.r);
+  const Y=v=>m.t+(yhi-v)/(yhi-ylo)*(H-m.t-m.b);
+
+  const g=css('--grid'), mu=css('--muted'), ax=css('--axis');
+  let svg='<svg viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'">';
+  niceTicks(ylo,yhi,4).forEach(function(v){
+    const y=Y(v);
+    svg+='<line x1="'+m.l+'" y1="'+y+'" x2="'+(W-m.r)+'" y2="'+y+'" stroke="'+g+
+      '" stroke-width="1"/><text x="'+(m.l-7)+'" y="'+(y+3.5)+'" fill="'+mu+
+      '" font-size="10" text-anchor="end">'+f(v,digits)+unit+'</text>';
+  });
+  niceTicks(xlo,xhi,4).forEach(function(v){
+    if(v>xhi||v<xlo) return;
+    svg+='<text x="'+X(v)+'" y="'+(H-6)+'" fill="'+mu+'" font-size="10" '+
+      'text-anchor="middle">'+xLabel(v,range)+'</text>';
+  });
+  if(includeZero&&ylo<0&&yhi>0)
+    svg+='<line x1="'+m.l+'" y1="'+Y(0)+'" x2="'+(W-m.r)+'" y2="'+Y(0)+
+      '" stroke="'+ax+'" stroke-width="1"/>';
+
+  series.forEach(function(s){
+    if(!s.data.length) return;
+    /* The device clock stops while the board is off, so a reboot leaves a gap.
+       Start a new subpath rather than drawing a line across missing time. */
+    const gaps=[];
+    for(let k=1;k<s.data.length;k++) gaps.push(Math.abs(s.data[k].x-s.data[k-1].x));
+    gaps.sort((a,b)=>a-b);
+    const typical=gaps.length?gaps[Math.floor(gaps.length/2)]:0;
+    const brk=typical>0?typical*3.5:Infinity;
+    const d=s.data.map(function(p,k){
+      const jump=k&&Math.abs(p.x-s.data[k-1].x)>brk;
+      return (k&&!jump?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1)}).join(' ');
+    svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="2" '+
+      'stroke-linejoin="round" stroke-linecap="round"/>';
+    const last=s.data[s.data.length-1];
+    svg+='<circle cx="'+X(last.x).toFixed(1)+'" cy="'+Y(last.y).toFixed(1)+
+      '" r="3.5" fill="'+s.color+'" stroke="'+css('--surface')+'" stroke-width="2"/>';
+  });
+  svg+='<line id="'+boxId+'cross" x1="0" y1="'+m.t+'" x2="0" y2="'+(H-m.b)+
+    '" stroke="'+ax+'" stroke-width="1" visibility="hidden"/></svg>';
+  box.innerHTML=svg;
+
+  const tip=document.createElement('div'); tip.className='tip'; tip.style.display='none';
+  box.appendChild(tip);
+  const cross=$(boxId+'cross');
+  box.onmousemove=function(ev){
+    const r=box.getBoundingClientRect(), px=(ev.clientX-r.left)*(W/r.width);
+    if(px<m.l||px>W-m.r){box.onmouseleave();return}
+    const xv=xlo+(px-m.l)/(W-m.l-m.r)*(xhi-xlo);
+    cross.setAttribute('x1',px); cross.setAttribute('x2',px);
+    cross.setAttribute('visibility','visible');
+    let html='<b>'+tipLabel(xv,range)+'</b>';
+    series.forEach(function(s){
+      if(!s.data.length) return;
+      let best=s.data[0];
+      s.data.forEach(p=>{if(Math.abs(p.x-xv)<Math.abs(best.x-xv)) best=p});
+      html+='<br><i class="swatch" style="background:'+s.color+'"></i> '+
+        esc(s.label)+' <b>'+f(best.y,digits)+unit+'</b>';
+    });
+    tip.innerHTML=html; tip.style.display='block';
+    const left=(px/W)*r.width;
+    tip.style.left=Math.min(Math.max(8,left+12),r.width-tip.offsetWidth-8)+'px';
+    tip.style.top='8px';
+  };
+  box.onmouseleave=function(){cross.setAttribute('visibility','hidden');tip.style.display='none'};
+}
+
+function xLabel(v,range){
+  if(Math.round(v)===0) return 'now';
+  if(range>7200){const h=v/60; return (Math.abs(h)<10?h.toFixed(1):h.toFixed(0))+'h'}
+  return Math.round(v)+'m';
+}
+function tipLabel(v,range){
+  const a=Math.abs(v);
+  if(a<.05) return 'now';
+  if(a<60) return a.toFixed(1)+' min ago';
+  const h=Math.floor(a/60), m=Math.round(a%60);
+  return h+'h '+(m?m+'m ':'')+'ago';
+}
+async function getHistory(range){
+  const c=histCache[range];
+  /* live ranges come from RAM and move every poll; archive rows change once a minute */
+  const maxAge=range<=1800?8000:60000;
+  if(c&&Date.now()-c.at<maxAge) return c.data;
+  const d=await (await fetch('/api/history?range='+range,{cache:'no-store'})).json();
+  histCache[range]={at:Date.now(),data:d};
+  return d;
+}
+function buildSeries(h,pick){
+  return h.packs.map((p,i)=>({label:p.label,color:packColor(i),
+    data:p.t.map((t,k)=>({x:(t-h.now)/60,y:pick(p,k)}))}));
+}
+function redraw(key){
+  const c=chartData[key], cfg=CHARTS[key];
+  if(!c) return;
+  drawChart(cfg.box,cfg.leg,c.series,cfg.unit,cfg.dig,cfg.zero,c.range);
+}
+async function refreshChart(key){
+  const cfg=CHARTS[key], range=chartRange[key];
+  let h;
+  try{ h=await getHistory(range) }catch(e){ return }
+  chartData[key]={series:buildSeries(h,cfg.pick),range:range};
+  redraw(key);
+}
+function renderRangeButtons(){
+  document.querySelectorAll('.ranges').forEach(function(box){
+    const key=box.dataset.chart;
+    box.innerHTML=RANGES.map(r=>'<button class="rbtn" data-r="'+r[0]+'" aria-pressed="'+
+      (chartRange[key]===r[0]?'true':'false')+'">'+r[1]+'</button>').join('');
+    box.querySelectorAll('.rbtn').forEach(b=>b.onclick=function(){
+      chartRange[key]=parseInt(b.dataset.r,10);
+      try{localStorage.setItem('ranges',JSON.stringify(chartRange))}catch(e){}
+      renderRangeButtons();
+      refreshChart(key);
+    });
+  });
+}
+function renderCharts(){ Object.keys(CHARTS).forEach(refreshChart) }
+function redrawAll(){ Object.keys(CHARTS).forEach(redraw) }
+addEventListener('resize',()=>{if(!$('tab-dash').hidden) redrawAll()});
+
+/* devices -------------------------------------------------------------- */
+let scanTimer=null;
+function signalBars(rssi){
+  const n=rssi>=-60?4:rssi>=-75?3:rssi>=-88?2:1;
+  let h='<span class="bars">';
+  for(let k=1;k<=4;k++) h+='<i style="height:'+(k*2.5+2)+'px;opacity:'+(k<=n?1:.25)+'"></i>';
+  return h+'</span> <span class="val">'+rssi+'</span>';
+}
+async function devApi(qs){
+  let d;
+  try{ d=await (await fetch('/api/devices'+(qs||''),{cache:'no-store'})).json() }
+  catch(e){ $('devMsg').textContent='could not reach the board'; return }
+  $('pollInput').value=d.poll;
+  $('devCount').textContent=d.packs.length+' of '+d.max+' slots used';
+  $('devMsg').textContent=d.err||'';
+  $('devBody').innerHTML=d.packs.length?d.packs.map(function(p){
+    return '<tr><td><input type="text" value="'+esc(p.label)+'" data-mac="'+esc(p.mac)+
+      '" class="renameInput"></td><td class="val">'+esc(p.mac)+'</td>'+
+      '<td><div class="rowbtns"><button class="btn" data-remove="'+esc(p.mac)+
+      '">Remove</button></div></td></tr>'}).join('')
+    : '<tr><td colspan="3" class="sub">nothing monitored yet &mdash; scan and add a device</td></tr>';
+  document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async function(){
+    if(!confirm('Stop monitoring '+b.dataset.remove+'?\n\nIts history is discarded.')) return;
+    await devApi('?remove='+encodeURIComponent(b.dataset.remove)); tick();
+  });
+  document.querySelectorAll('.renameInput').forEach(function(inp){
+    inp.onchange=async function(){
+      await devApi('?rename='+encodeURIComponent(inp.dataset.mac)+
+                   '&label='+encodeURIComponent(inp.value)); tick();
+    };
+  });
+}
+$('pollSave').onclick=async function(){
+  await devApi('?poll='+encodeURIComponent($('pollInput').value));
+  $('devMsg').textContent='interval saved'; tick();
+};
+$('scanBtn').onclick=async function(){
+  $('scanWrap').hidden=false;
+  $('scanBtn').disabled=true;
+  $('scanBody').innerHTML='<tr><td colspan="4" class="sub"><span class="spin"></span> '+
+    'scanning &mdash; polling is paused</td></tr>';
+  await fetch('/api/scan?start=1&secs=8',{cache:'no-store'});
+  clearInterval(scanTimer);
+  scanTimer=setInterval(pollScan,1500);
+  setTimeout(pollScan,1500);
+};
+async function pollScan(){
+  let d;
+  try{ d=await (await fetch('/api/scan',{cache:'no-store'})).json() }catch(e){ return }
+  if(d.scanning) return;
+  clearInterval(scanTimer); scanTimer=null;
+  $('scanBtn').disabled=false;
+  $('scanAge').textContent=d.ageSec>=0?'(as of '+d.ageSec+'s ago)':'';
+  const rows=d.results.slice().sort((a,b)=>(b.likely-a.likely)||(b.rssi-a.rssi));
+  $('scanBody').innerHTML=rows.length?rows.map(function(r){
+    return '<tr><td>'+(r.name?esc(r.name):'<span class="sub">(no name)</span>')+
+      (r.likely?' <span class="pill">likely pack</span>':'')+'</td>'+
+      '<td class="val">'+esc(r.mac)+'</td><td>'+signalBars(r.rssi)+'</td>'+
+      '<td><div class="rowbtns">'+(r.known?'<span class="sub">monitored</span>'
+        :'<button class="btn" data-add="'+esc(r.mac)+'" data-name="'+esc(r.name||r.mac)+
+         '">Add</button>')+'</div></td></tr>'}).join('')
+    : '<tr><td colspan="4" class="sub">nothing found &mdash; move the board closer and rescan</td></tr>';
+  document.querySelectorAll('[data-add]').forEach(b=>b.onclick=async function(){
+    await devApi('?add='+encodeURIComponent(b.dataset.add)+
+                 '&label='+encodeURIComponent(b.dataset.name));
+    pollScan(); tick();
+  });
+}
+
+/* polling -------------------------------------------------------------- */
+async function tick(){
+  try{
+    const s=await (await fetch('/api/status',{cache:'no-store'})).json();
+    lastStatus=s;
+    $('wifi').textContent=s.wifi.ssid?s.wifi.ssid+'  '+s.wifi.rssi+' dBm':'offline';
+    $('wifiDot').style.background=s.wifi.ssid?css('--good'):css('--crit');
+    $('uptime').textContent=fmtDur(s.uptime);
+    $('fleetState').textContent=s.fleet.running?'every '+s.fleet.cycle+'s':'stopped';
+    $('fleetBtn').textContent=s.fleet.running?'Stop polling':'Start polling';
+    renderPacks(s);
+    $('sysBody').innerHTML=
+      '<tr><th>IP address</th><td class="val">'+esc(s.wifi.ip)+'</td></tr>'+
+      '<tr><th>Network</th><td>'+esc(s.wifi.ssid||'-')+' ('+s.wifi.rssi+' dBm)</td></tr>'+
+      '<tr><th>Uptime</th><td>'+fmtDur(s.uptime)+'</td></tr>'+
+      '<tr><th>Free heap</th><td class="val">'+(s.heap/1024).toFixed(1)+' KB</td></tr>'+
+      '<tr><th>History storage</th><td class="val">'+(s.fsUsed/1024).toFixed(0)+' KB of '+
+        (s.fsTotal/1024).toFixed(0)+' KB used</td></tr>'+
+      '<tr><th>Packs monitored</th><td>'+s.packs.length+'</td></tr>';
+  }catch(e){ $('wifiDot').style.background=css('--crit') }
+}
+async function tickHistory(){
+  if($('tab-dash').hidden) return;
+  renderCharts();
+}
+$('fleetBtn').onclick=async function(){
+  await fetch('/api/control?do='+(lastStatus&&lastStatus.fleet.running?'stop':'start'));
+  tick();
+};
+$('otaForm').onsubmit=async function(ev){
+  ev.preventDefault();
+  const fd=new FormData(); fd.append('firmware',$('otaFile').files[0]);
+  $('otaMsg').textContent='uploading…';
+  try{
+    const r=await fetch('/update',{method:'POST',body:fd});
+    $('otaMsg').textContent=r.ok?'uploaded — rebooting':'upload failed';
+  }catch(e){ $('otaMsg').textContent='uploaded — rebooting' }
+};
+
+renderRangeButtons();
+(function(){ let t=null; try{t=localStorage.getItem('tab')}catch(e){} showTab(t||'dash') })();
+devApi();
+tick(); tickHistory();
+setInterval(tick,2000);
+setInterval(tickHistory,15000);
+</script>
+</body>
+</html>
