@@ -36,19 +36,55 @@ with no warranty. See [LICENSE](LICENSE).
 Nothing is wired to the pack — the ESP32 talks to it over the air, the same way
 a phone app would.
 
-## Build and flash
+## Install
+
+### From a browser, no toolchain
+
+Every push to `main` publishes a [release](../../releases) with prebuilt images.
+
+1. Download **`Lucas-BLE-ESP32-Monitor-<version>-full.bin`** from the latest
+   release.
+2. Open <https://esptool.spacehuhn.com/> in Chrome or Edge. It needs WebSerial,
+   so Firefox and Safari will not work.
+3. Connect the board over USB and press **Connect**.
+4. Add the file at offset **`0x0`**, then **Program**.
+
+One file, one offset — it already contains the bootloader, the partition table,
+the OTA selector and the app.
+
+**A full flash clears saved settings.** That image spans the NVS region, so the
+saved WiFi network, device list and poll interval are erased and the board comes
+back offering its `lucas-setup` access point. To update without losing them, use
+the `-app.bin` from the same release: upload it on the dashboard's **Firmware**
+tab, or flash it over USB at offset `0x10000`.
+
+### From source
 
 [PlatformIO](https://platformio.org/) builds it:
 
 ```bash
-pio run                                    # build
+pio run                                        # build
 pio run -t upload --upload-port /dev/ttyUSB0   # flash over USB
-pio device monitor                         # serial console, 115200
+pio device monitor                             # serial console, 115200
 ```
 
 The dashboard page is compiled in: `tools/gen_page.py` runs before every build,
 checks `web/dashboard.html` for errors and gzips it into a header the firmware
 serves directly.
+
+### Releases
+
+`.github/workflows/release.yml` builds on every push and pull request, and on
+pushes to `main` also tags and publishes a release (`v0.1.<run number>`) with:
+
+| Artifact | Flash at | Use |
+|---|---|---|
+| `...-full.bin` | `0x0` | first install or recovery; clears saved settings |
+| `...-app.bin` | `0x10000`, or OTA | update, keeping WiFi and devices |
+| `SHA256SUMS` | | checksums for both |
+
+A pull request build produces the same images as a downloadable artifact but
+publishes nothing.
 
 ## First run
 
@@ -136,6 +172,7 @@ reboot
 ## Layout
 
 ```
+.github/workflows/     CI: builds every push, releases on main
 platformio.ini         build config; two envs, USB and OTA
 partitions.csv         two 1.625 MB app slots plus 640 KB of LittleFS
 include/config.h       hostname, setup AP name and password

@@ -1,0 +1,136 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A release is cut per push to main, so let a newer push supersede an
+# in-flight one rather than racing it for the same tag.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # tools/gen_page.py checks the dashboard's JavaScript with node before
+      # compressing it into the firmware, and fails the build if it is broken.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build
+        run: pio run -e esp32dev
+
+      - name: Assemble flashable images
+        id: images
+        run: |
+          set -euo pipefail
+          VERSION="v0.1.${{ github.run_number }}"
+          NAME="Lucas-BLE-ESP32-Monitor"
+          BUILD=.pio/build/esp32dev
+          mkdir -p dist
+
+          ESPTOOL=$(find ~/.platformio/packages -name esptool.py -path '*tool-esptoolpy/*' | head -1)
+          BOOT_APP0=$(find ~/.platformio/packages/framework-arduinoespressif32 \
+                        -name boot_app0.bin | head -1)
+          test -n "$ESPTOOL" && test -n "$BOOT_APP0"
+
+          # One image covering bootloader, partition table, OTA selector and the
+          # app, so a web flasher needs a single file at a single offset.
+          python "$ESPTOOL" --chip esp32 merge_bin \
+            -o "dist/${NAME}-${VERSION}-full.bin" \
+            --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000  "$BUILD/bootloader.bin" \
+            0x8000  "$BUILD/partitions.bin" \
+            0xe000  "$BOOT_APP0" \
+            0x10000 "$BUILD/firmware.bin"
+
+          # The app on its own, for OTA and for reflashing without clearing the
+          # saved WiFi network and device list.
+          cp "$BUILD/firmware.bin" "dist/${NAME}-${VERSION}-app.bin"
+
+          # A truncated merge would still "succeed", so check it looks real.
+          SIZE=$(stat -c%s "dist/${NAME}-${VERSION}-full.bin")
+          test "$SIZE" -gt 1000000 || { echo "merged image is only $SIZE bytes"; exit 1; }
+
+          ( cd dist && sha256sum ./*.bin > SHA256SUMS )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ steps.images.outputs.version }}
+          path: dist/
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.images.outputs.version }}
+          NAME: ${{ steps.images.outputs.name }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          Built from \`${GITHUB_SHA::7}\` on \`main\`.
+
+          ## Flash it from a browser
+
+          Open **<https://esptool.spacehuhn.com/>** in Chrome or Edge, connect the
+          board over USB, then add **one** file:
+
+          | File | Offset |
+          |---|---|
+          | \`${NAME}-${VERSION}-full.bin\` | \`0x0\` |
+
+          That image contains the bootloader, the partition table, the OTA
+          selector and the app. It is the right choice for a first install or to
+          recover a board.
+
+          **It clears saved settings.** The image spans the NVS region, so the
+          saved WiFi network, device list and poll interval are erased and the
+          board comes back up offering its \`lucas-setup\` access point.
+
+          ## Update without losing settings
+
+          Use \`${NAME}-${VERSION}-app.bin\`: upload it on the dashboard's
+          **Firmware** tab, or
+
+          \`\`\`bash
+          curl -F firmware=@${NAME}-${VERSION}-app.bin http://lucas.local/update
+          \`\`\`
+
+          Flashing that file over USB instead works too, at offset \`0x10000\`.
+
+          Checksums are in \`SHA256SUMS\`.
+          EOF
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file notes.md \
+            dist/*.bin dist/SHA256SUMS
